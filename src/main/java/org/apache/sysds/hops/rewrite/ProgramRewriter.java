@@ -22,6 +22,8 @@ package org.apache.sysds.hops.rewrite;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.conf.CompilerConfig.ConfigType;
@@ -50,7 +52,7 @@ public class ProgramRewriter{
 	private static final boolean CHECK = false;
 	
 	static {
-		//Logger.getLogger("org.apache.sysds.hops.rewrite").setLevel(Level.DEBUG);
+		Logger.getLogger("org.apache.sysds.hops.rewrite").setLevel(Level.DEBUG);
 	}
 	
 	private ArrayList<HopRewriteRule> _dagRuleSet = null;
@@ -140,6 +142,9 @@ public class ProgramRewriter{
 				_dagRuleSet.add( new RewriteAlgebraicSimplificationDynamic()      ); //dependencies: cse
 				_dagRuleSet.add( new RewriteAlgebraicSimplificationStatic()       ); //dependencies: cse
 			}
+            if(OptimizerUtils.ALLOW_GENERAL_MMCHAIN_REWRITES){
+                _dagRuleSet.add( new RewriteMatrixOperations()          );
+            }
 		}
 		
 		// cleanup after all rewrites applied 

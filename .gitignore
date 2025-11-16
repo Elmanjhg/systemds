@@ -157,3 +157,4 @@ docker/mountFolder/*.bin.mtd
 
 SEAL-*/
 
+./Todo.txt

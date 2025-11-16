@@ -1,0 +1,42 @@
+# --- Test Case 4: Transpose Rewrite (Obvious Win) ---
+#
+# Expression: t(A %*% B) %*% C
+#
+# A = 1000x10
+# B = 10x1000
+# C = 1000x5
+#
+# --- Cost Analysis (FLOPs) ---
+#
+# Plan 1: Naive (No Rewrite)
+#   1. T = (A %*% B)       (1000*10*1000 = 10,000,000 FLOPs) -> T is 1000x1000
+#   2. U = t(T)            (Cost 0) -> U is 1000x1000
+#   3. D = U %*% C         (1000*1000*5 = 5,000,000 FLOPs)
+#   TOTAL (Plan 1) = 15,000,000 FLOPs
+#
+# Plan 2: Apply Rewrite -> (t(B) %*% t(A)) %*% C
+#   Optimizer rewrites to a new chain: tB %*% tA %*% C
+#   Dimensions: tB(1000x10), tA(10x1000), C(1000x5)
+#
+#   Sub-plan 2a: (tB %*% tA) %*% C
+#     1. U = (tB %*% tA)     (1000*10*1000 = 10,000,000 FLOPs) -> U is 1000x1000
+#     2. D = U %*% C         (1000*1000*5 = 5,000,000 FLOPs)
+#     TOTAL (Sub-plan 2a) = 15,000,000 FLOPs
+#
+#   Sub-plan 2b: tB %*% (tA %*% C)
+#     1. V = (tA %*% C)      (10*1000*5 = 50,000 FLOPs) -> V is 10x5
+#     2. D = (tB %*% V)      (1000*10*5 = 50,000 FLOPs)
+#     TOTAL (Sub-plan 2b) = 100,000 FLOPs  <- BEST
+#
+# We expect the optimizer to first apply the transpose rewrite,
+# and then the matrix chain optimizer must find Sub-plan 2b.
+
+A = rand(rows=1000, cols=10)
+B = rand(rows=10, cols=1000)
+C = rand(rows=1000, cols=5)
+
+D = t(A %*% B) %*% C
+
+
+print("Test Case 4 Complete. Result D (sum):")
+print(sum(D))

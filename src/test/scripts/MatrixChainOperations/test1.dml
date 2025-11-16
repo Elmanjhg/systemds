@@ -1,0 +1,22 @@
+# --- Test Case 1: Simple 3-Matrix Chain ---
+#
+# A = 4x2
+# B = 2x1
+# C = 1x4
+#
+# We expect the optimizer to choose (A %*% B) %*% C
+# Cost (A%*%B)%*%C = (4*2*1) + (4*1*4) = 8 + 16 = 24 MFLOPs
+# Cost A%*%(B%*%C) = (2*1*4) + (4*2*4) = 8 + 32 = 40 MFLOPs
+
+# initialize matrices with random values
+A = rand(rows=4, cols=2)
+B = rand(rows=2, cols=1)
+C = rand(rows=1, cols=4)
+
+# write the unoptimized chain and let the optimizer choose the bracket order
+D = A %*% B %*% C
+
+
+# write the result to the console to ensure it runs
+print("Test Case 1 Done. Result D:")
+print(D)

@@ -204,8 +204,14 @@ public class OptimizerUtils
 	 * ALLOW_SUM_PRODUCT_REWRITES.
 	 */
 	public static boolean ALLOW_ADVANCED_MMCHAIN_REWRITES = false;
-	
-	/**
+
+    /**
+     * Enables general mmchain rewrites, using DP calculating for all operations the
+     * best exec plan
+     */
+    public static boolean ALLOW_GENERAL_MMCHAIN_REWRITES = true;
+
+    /**
 	 * Enables a specific hop dag rewrite that splits hop dags after csv persistent reads with 
 	 * unknown size in order to allow for recompile.
 	 */
