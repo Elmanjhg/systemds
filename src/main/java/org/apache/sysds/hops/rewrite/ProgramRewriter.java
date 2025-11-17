@@ -52,7 +52,7 @@ public class ProgramRewriter{
 	private static final boolean CHECK = false;
 	
 	static {
-		Logger.getLogger("org.apache.sysds.hops.rewrite").setLevel(Level.DEBUG);
+		Logger.getLogger("org.apache.sysds.hops.rewrite").setLevel(Level.TRACE);
 	}
 	
 	private ArrayList<HopRewriteRule> _dagRuleSet = null;
