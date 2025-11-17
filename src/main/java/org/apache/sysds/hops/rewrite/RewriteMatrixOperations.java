@@ -20,25 +20,11 @@
 package org.apache.sysds.hops.rewrite;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-
-import org.apache.commons.lang3.mutable.MutableInt;
 import org.apache.sysds.common.Types;
 import org.apache.sysds.hops.AggBinaryOp;
 import org.apache.sysds.hops.Hop;
-import org.apache.sysds.hops.HopsException;
-import org.apache.sysds.runtime.util.CollectionUtils;
-import org.apache.sysds.utils.Explain;
 
-/**
- * <strong>Rule</strong>: Determine the optimal order of execution for a chain of
- * matrix multiplications <br>
- * <strong>Solution</strong>: Classic Dynamic Programming <br>
- * <strong>Approach</strong>: Currently, the approach based only on matrix dimensions <br>
- * <strong>Goal</strong>: To reduce the number of computations in the run-time
- * (map-reduce) layer
- */
+
 public class RewriteMatrixOperations extends HopRewriteRule
 {
     @Override
@@ -47,7 +33,10 @@ public class RewriteMatrixOperations extends HopRewriteRule
         if( roots == null )
             return null;
 
-        // Find the optimal order for the chain whose result is the current HOP
+        if( LOG.isDebugEnabled() )
+            LOG.debug("=== RewriteMatrixOperations: Starting optimization ===");
+
+        // Process each root in the DAG
         for( Hop h : roots )
             rule_OptimizeMMChains(h, state);
 
@@ -60,28 +49,34 @@ public class RewriteMatrixOperations extends HopRewriteRule
         if( root == null )
             return null;
 
-        // Find the optimal order for the chain whose result is the current HOP
-        rule_OptimizeMMChains(root, state);
+        if( LOG.isDebugEnabled() )
+            LOG.debug("=== RewriteMatrixOperations: Starting single root optimization ===");
 
+        rule_OptimizeMMChains(root, state);
         return root;
     }
 
     /**
-     * rule_OptimizeMMChains(): This method goes through all Hops in the DAG
-     * to find chains that need to be optimized.
+     * Traverses the HOP DAG to find matrix multiplication chains and transpose operations
+     * that can be optimized.
      *
-     * @param hop high-level operator
+     * @param hop The current hop being visited
+     * @param state Program rewrite status for tracking modifications
      */
     private void rule_OptimizeMMChains(Hop hop, ProgramRewriteStatus state)
     {
         if( !hop.isVisited() ) {
+            // check if this hop is a matrix multiplication or transpose operation
+            boolean isMatMul = HopRewriteUtils.isMatrixMultiply(hop)
+                    && !((AggBinaryOp) hop).hasLeftPMInput();
+            boolean isTranspose = HopRewriteUtils.isReorg(hop, Types.ReOrgOp.TRANS);
 
-            if (HopRewriteUtils.isMatrixMultiply(hop) && !((AggBinaryOp) hop).hasLeftPMInput()) {
-                // Try to find and optimize the chain in which current Hop is the
-                // last operator
-                prepAndOptimizeMMChain(hop, state);
+            // if found an optimizable operation, try to optimize it
+            if ( isMatMul || isTranspose ) {
+                prepAndOptimizeMyNewDP(hop, state);
             }
 
+            // Recursively visit all children
             for (Hop hi : hop.getInput())
                 rule_OptimizeMMChains(hi, state);
 
@@ -90,339 +85,398 @@ public class RewriteMatrixOperations extends HopRewriteRule
     }
 
     /**
-     * optimizeMMChain(): It optimizes the matrix multiplication chain in which
-     * the last Hop is "this".
-     * <ul><li>Step 1: Identify the chain (mmChain).</li>
-     * <li>Step 2: Clear all links among the Hops that are involved in mmChain.</li>
-     * <li>Step 3: Find the optimal ordering via dynamic programming.</li>
-     * <li>Step 4: Relink the hops in mmChain.</li></ul>
-     * @param hop high-level operator
-     */
-    private void prepAndOptimizeMMChain( Hop hop, ProgramRewriteStatus state )
-    {
-        if( LOG.isTraceEnabled() ) {
-            LOG.trace("MM Chain Optimization for HOP: (" + hop.getClass().getSimpleName()
-                    + ", " + hop.getHopID() + ", " + hop.getName() + ")");
-        }
-
-        // Step 1: Identify the chain (mmChain) & clear all links among the Hops
-        // that are involved in mmChain.
-
-        // Initialize mmChain with current hop's inputs
-        ArrayList<Hop> mmOperators = new ArrayList<>();
-        mmOperators.add(hop);
-        ArrayList<Hop> mmChain = new ArrayList<>(hop.getInput());
-
-        int mmChainIndex = 0;
-
-        // Expand each Hop in mmChain to find the entire matrix multiplication chain
-        while( mmChainIndex < mmChain.size() )
-        {
-            boolean expandable = false;
-
-            Hop h = mmChain.get(mmChainIndex);
-            /*
-             * Check if mmChain[i] is expandable:
-             * 1) It must be MATMULT
-             * 2) It must not have been visited already
-             *    (one MATMULT should get expanded only in one chain)
-             * 3) Its output should not be used in multiple places
-             *    (either within chain or outside the chain)
-             */
-
-            if ( HopRewriteUtils.isMatrixMultiply(h) && !h.isVisited() )
-            {
-                // check if the output of "h" is used at multiple places. If yes, it can
-                // not be expanded.
-                expandable = !(h.getParent().size() > 1 || inputCount(h.getParent().get(0), h) > 1);
-                if( !expandable )
-                    break;
-            }
-
-            h.setVisited();
-
-            if( !expandable ) {
-                mmChainIndex++;
-            }
-            else {
-                List<Hop> tempList = mmChain.get(mmChainIndex).getInput();
-                if( tempList.size() != 2 ) {
-                    throw new HopsException(hop.printErrorLocation() + "Hops::rule_OptimizeMMChain(): AggBinary must have exactly two inputs.");
-                }
-
-                // add current operator to mmOperators, and its input nodes to mmChain
-                mmOperators.add(mmChain.get(mmChainIndex));
-                mmChain.set(mmChainIndex, tempList.get(0));
-                mmChain.add(mmChainIndex + 1, tempList.get(1));
-            }
-        }
-
-        // print the MMChain
-        if( LOG.isTraceEnabled() ) {
-            LOG.trace("Identified MM Chain: ");
-            for( Hop h : mmChain ) {
-                logTraceHop(h, 1);
-            }
-        }
-
-        //core mmchain optimization (potentially overridden)
-        if( mmChain.size() != 2 )
-            optimizeMMChain(hop, mmChain, mmOperators, state);
-    }
-
-    protected void optimizeMMChain(Hop hop, ArrayList<Hop> mmChain, ArrayList<Hop> mmOperators, ProgramRewriteStatus state) {
-        // Step 2: construct dims array
-        double[] dimsArray = new double[mmChain.size() + 1];
-        boolean dimsKnown = getDimsArray( hop, mmChain, dimsArray );
-
-        if( dimsKnown ) {
-            // Step 3: Clear the links among Hops within the identified chain
-            clearLinksWithinChain ( hop, mmOperators );
-
-            // Step 4: Find the optimal ordering via dynamic programming.
-
-            // Invoke Dynamic Programming
-            int size = mmChain.size();
-            int[][] split = mmChainDP(dimsArray, mmChain.size());
-
-            // Step 5: Relink the hops using the optimal ordering (split[][]) found from DP.
-            LOG.trace("Optimal MM Chain: ");
-            mmChainRelinkHops(mmOperators.get(0), 0, size - 1, mmChain, mmOperators, new MutableInt(1), split, 1);
-        }
-    }
-
-    /**
-     * mmChainDP(): Core method to perform dynamic programming on a given array
-     * of matrix dimensions. <br>
+     * Main entry point for the joint DP optimizer. This method:
+     * 1. Extracts the matrix chain from the HOP DAG
+     * 2. Runs the joint DP algorithm to find the optimal plan
+     * 3. Reconstructs the optimized HOP DAG
+     * 4. Replaces the original DAG if the optimization is beneficial
      *
-     * Thomas H. Cormen, Charles E. Leiserson, Ronald L. Rivest, Clifford Stein
-     * Introduction to Algorithms, Third Edition, MIT Press, page 395.
+     * @param hop The root hop of the potential chain to optimize
+     * @param state Program rewrite status
      */
-    private static int[][] mmChainDP(double[] dimArray, int size)
+    private void prepAndOptimizeMyNewDP(Hop hop, ProgramRewriteStatus state)
     {
-        double[][] dpMatrix = new double[size][size]; //min cost table
-        int[][] split = new int[size][size]; //min cost index table
-
-        //init minimum costs for chains of length 1
-        for( int i = 0; i < size; i++ ) {
-            Arrays.fill(dpMatrix[i], 0);
-            Arrays.fill(split[i], -1);
+        if( LOG.isTraceEnabled() ) {
+            LOG.trace("MChain - Opt - Processing HOP ID=" + hop.getHopID());
         }
 
-        //compute cost-optimal chains for increasing chain sizes
-        for( int l = 2; l <= size; l++ ) { // chain length
-            for( int i = 0; i < size - l + 1; i++ ) {
-                int j = i + l - 1;
-                // find cost of (i,j)
-                dpMatrix[i][j] = Double.MAX_VALUE;
-                for( int k = i; k <= j - 1; k++ )
-                {
-                    //recursive cost computation
-                    double cost = dpMatrix[i][k] + dpMatrix[k + 1][j]
-                            + (dimArray[i] * dimArray[k + 1] * dimArray[j + 1]);
+        ChainExtractionResult chainResult = extractChain(hop);
 
-                    //prune suboptimal
-                    if( cost < dpMatrix[i][j] ) {
-                        dpMatrix[i][j] = cost;
-                        split[i][j] = k;
-                    }
-                }
-
-                if( LOG.isTraceEnabled() ){
-                    LOG.trace("mmchainopt [i="+(i+1)+",j="+(j+1)+"]: costs = "+dpMatrix[i][j]+", split = "+(split[i][j]+1));
-                }
-            }
-        }
-
-        return split;
-    }
-
-    /**
-     * mmChainRelinkHops(): This method gets invoked after finding the optimal
-     * order (split[][]) from dynamic programming. It relinks the Hops that are
-     * part of the mmChain.
-     * @param mmChain basic operands in the entire matrix multiplication chain
-     * @param mmOperators Hops that store the intermediate results in the chain.
-     *                      <strong>For example:</strong> A = B %*% (C %*% D) there will be three
-     *                      Hops in mmChain (B,C,D), and two Hops in mmOperators
-     *                     (one for each * %*%).
-     * @param h high level operator
-     * @param i array index i
-     * @param j array index j
-     * @param opIndex operator index
-     * @param split optimal order
-     * @param level log level
-     */
-    protected final void mmChainRelinkHops(Hop h, int i, int j, ArrayList<Hop> mmChain,
-                                           ArrayList<Hop> mmOperators, MutableInt opIndex, int[][] split, int level)
-    {
-        //NOTE: the opIndex is a MutableInt in order to get the correct positions
-        //in ragged chains like ((((a, b), c), (D, E), f), e) that might be given
-        //like that by the original scripts variable assignments
-
-        //single matrix - end of recursion
-        if( i == j ) {
-            logTraceHop(h, level);
+        if (!chainResult.isValid || chainResult.leafMatrices.size() < 2) {
+            // Not a valid chain or too short to optimize
             return;
         }
 
-        if( LOG.isTraceEnabled() ){
-            String offset = Explain.getIdentation(level);
-            LOG.trace(offset + "(");
-        }
+        ArrayList<Hop> chain = chainResult.leafMatrices;
 
-        // Set Input1 for current Hop h
-        if( i == split[i][j] ) {
-            h.getInput().add(mmChain.get(i));
-            mmChain.get(i).getParent().add(h);
-        }
-        else {
-            int ix = opIndex.getValue();
-            opIndex.increment();
-            h.getInput().add(mmOperators.get(ix));
-            mmOperators.get(ix).getParent().add(h);
-        }
-
-        // Set Input2 for current Hop h
-        if( split[i][j] + 1 == j ) {
-            h.getInput().add(mmChain.get(j));
-            mmChain.get(j).getParent().add(h);
-        }
-        else {
-            int ix = opIndex.getValue();
-            opIndex.increment();
-            h.getInput().add(mmOperators.get(ix));
-            mmOperators.get(ix).getParent().add(h);
-        }
-
-        // Find children for both the inputs
-        mmChainRelinkHops(h.getInput(0), i, split[i][j], mmChain, mmOperators, opIndex, split, level+1);
-        mmChainRelinkHops(h.getInput(1), split[i][j] + 1, j, mmChain, mmOperators, opIndex, split, level+1);
-
-        // Propagate properties of input hops to current hop h
-        h.refreshSizeInformation();
-
-        if( LOG.isTraceEnabled() ){
-            String offset = Explain.getIdentation(level);
-            LOG.trace(offset + ")");
-        }
-    }
-
-    protected static void clearLinksWithinChain( Hop hop, ArrayList<Hop> operators )
-    {
-        for( int i=0; i < operators.size(); i++ ) {
-            Hop op = operators.get(i);
-            if( op.getInput().size() != 2 || (i > 0 && op.getParent().size() > 1 ) ) {
-                throw new HopsException(hop.printErrorLocation() +
-                        "Unexpected error while applying optimization on matrix-mult chain. \n");
+        if( LOG.isTraceEnabled() ) {
+            for (int i = 0; i < chain.size(); i++) {
+                Hop h = chain.get(i);
+                String transposeFlag = chainResult.leafIsTransposed.get(i) ? " [TRANSPOSED]" : "";
+                LOG.trace("  Chain[" + i + "]: " + h.getName() + " ("
+                        + h.getDim1() + "x" + h.getDim2() + ")" + transposeFlag);
             }
-            Hop input1 = op.getInput(0);
-            Hop input2 = op.getInput(1);
+        }
 
-            op.getInput().clear();
-            input1.getParent().remove(op);
-            input2.getParent().remove(op);
+        for (Hop h : chain) {
+            if (!h.dimsKnown()) {
+                return;
+            }
+        }
+
+        DPResult dpResult = newDPmmChain(hop, chainResult);
+
+        if (dpResult == null || dpResult.optimalPlan == null) {
+            return; // no optimization found
+        }
+
+        Hop optimizedHop = reconstructPlan(dpResult.memo, dpResult.chainResult, 0,
+                chain.size() - 1, dpResult.useTransposedPlan);
+
+        if (optimizedHop == null) {
+            return;
+        }
+
+        ArrayList<Hop> parents = new ArrayList<>(hop.getParent());
+        for (Hop parent : parents) {
+            HopRewriteUtils.replaceChildReference(parent, hop, optimizedHop);
         }
     }
 
     /**
-     * Obtains all dimension information of the chain and constructs the dimArray.
-     * If all dimensions are known it returns true; otherwise the mmchain rewrite
-     * should be ended without modifications.
+     * Core dynamic programming algorithm that computes optimal plans.
      *
-     * @param hop high-level operator
-     * @param chain list of high-level operators
-     * @param dimsArray dimension array
-     * @return true if all dimensions known
+     * This is the "brain" of the optimizer. It uses a 2D memoization table where each
+     * cell memo[i][j] stores TWO plans:
+     * - normalPlan: Optimal way to compute chain[i...j]
+     * - transposedPlan: Optimal way to compute t(chain[i...j])
+     *
+     * By tracking both plans simultaneously, we can make globally optimal decisions
+     * about when to apply transpose rewrites.
+     *
+     * Complexity: O(n³) time, O(n²) space where n is the chain length
+     *
+     * @param rootHop The root hop of the expression
+     * @param chainResult The extracted chain with transpose metadata
+     * @return DPResult containing the optimal plan and memo table
      */
-    protected static boolean getDimsArray( Hop hop, ArrayList<Hop> chain, double[] dimsArray )
+    private DPResult newDPmmChain(Hop rootHop, ChainExtractionResult chainResult)
     {
-        boolean dimsKnown = true;
+        ArrayList<Hop> chain = chainResult.leafMatrices;
+        int size = chain.size();
 
-        // Build the array containing dimensions from all matrices in the chain
-        // check the dimensions in the matrix chain to insure all dimensions are known
-        for (Hop value : chain)
-            if (value.getDim1() <= 0 || value.getDim2() <= 0)
-                dimsKnown = false;
+        // The memoization table: stores both normal and transposed plans for each subproblem
+        PlanPair[][] memo = new PlanPair[size][size];
 
-        if( dimsKnown ) { //populate dims array if all dims known
-            for( int i = 0; i < chain.size(); i++ ) {
-                if (i == 0) {
-                    dimsArray[i] = chain.get(i).getDim1();
-                    if (dimsArray[i] <= 0) {
-                        throw new HopsException(hop.printErrorLocation() +
-                                "Hops::optimizeMMChain() : Invalid Matrix Dimension: "+ dimsArray[i]);
+        // base cases
+        // For each matrix, we compute the cost and dimensions of using it
+        // both normally and transposed
+        for (int i = 0; i < size; i++) {
+            memo[i][i] = new PlanPair();
+            Hop currentHop = chain.get(i);
+            boolean isTransposed = chainResult.leafIsTransposed.get(i);
+
+            long rows = currentHop.getDim1();
+            long cols = currentHop.getDim2();
+
+            if (isTransposed) {
+                // this matrix already appears transposed in the original expression
+                // e.g., it's part of t(A*B), so A appears transposed
+                memo[i][i].normalPlan = new Plan(0, i, cols, rows, true);
+                memo[i][i].transposedPlan = new Plan(0, i, rows, cols, false);
+            } else {
+                // Normal matrix
+                memo[i][i].normalPlan = new Plan(0, i, rows, cols, false);
+                memo[i][i].transposedPlan = new Plan(0, i, cols, rows, true);
+            }
+        }
+
+        // build up solutions for increasing chain lengths
+        // This is the core DP loop that tries all possible split points
+        for (int len = 2; len <= size; len++) {
+            for (int i = 0; i < size - len + 1; i++) {
+                int j = i + len - 1;
+                memo[i][j] = new PlanPair();
+
+                // Try all possible split points k where i <= k < j
+                for (int k = i; k < j; k++) {
+
+                    // === Compute optimal NORMAL plan for (i...j) ===
+                    // This computes: Left(i...k) %*% Right(k+1...j)
+                    Plan leftNorm = memo[i][k].normalPlan;
+                    Plan rightNorm = memo[k+1][j].normalPlan;
+
+                    if (leftNorm.cost != Double.MAX_VALUE && rightNorm.cost != Double.MAX_VALUE) {
+                        // Verify dimension compatibility: left.cols must equal right.rows
+                        if (leftNorm.dim2 == rightNorm.dim1) {
+                            // Cost = cost(left) + cost(right) + cost(multiply)
+                            // where cost(multiply) = rows × inner × cols
+                            double cost = leftNorm.cost + rightNorm.cost
+                                    + (double) leftNorm.dim1 * leftNorm.dim2 * rightNorm.dim2;
+
+                            if (cost < memo[i][j].normalPlan.cost) {
+                                memo[i][j].normalPlan = new Plan(cost, k,
+                                        leftNorm.dim1, rightNorm.dim2, false);
+                            }
+                        }
+                    }
+
+                    // compute optimal TRANSPOSED plan for t(i...j)
+                    // we need the transposed plans for both children, in reversed order
+                    Plan leftTrans = memo[i][k].transposedPlan;
+                    Plan rightTrans = memo[k+1][j].transposedPlan;
+
+                    if (leftTrans.cost != Double.MAX_VALUE && rightTrans.cost != Double.MAX_VALUE) {
+                        if (rightTrans.dim2 == leftTrans.dim1) {
+                            double cost = leftTrans.cost + rightTrans.cost
+                                    + (double) rightTrans.dim1 * rightTrans.dim2 * leftTrans.dim2;
+
+                            if (cost < memo[i][j].transposedPlan.cost) {
+                                memo[i][j].transposedPlan = new Plan(cost, k,
+                                        rightTrans.dim1, leftTrans.dim2, true);
+                            }
+                        }
                     }
                 }
-                else if (chain.get(i - 1).getDim2() != chain.get(i).getDim1()) {
-                    throw new HopsException(hop.printErrorLocation() +
-                            "Hops::optimizeMMChain() : Matrix Dimension Mismatch: " +
-                            chain.get(i - 1).getDim2()+" != "+chain.get(i).getDim1());
-                }
-
-                dimsArray[i + 1] = chain.get(i).getDim2();
-                if( dimsArray[i + 1] <= 0 ) {
-                    throw new HopsException(hop.printErrorLocation() +
-                            "Hops::optimizeMMChain() : Invalid Matrix Dimension: " + dimsArray[i + 1]);
-                }
             }
         }
 
-        return dimsKnown;
-    }
+        // select the final plan
+        DPResult result = new DPResult();
+        result.memo = memo;
+        result.chainResult = chainResult;
 
-    private static int inputCount( Hop p, Hop h ) {
-        return CollectionUtils.cardinality(h, p.getInput());
-    }
+        Plan finalNormal = memo[0][size-1].normalPlan;
+        Plan finalTransposed = memo[0][size-1].transposedPlan;
 
-    private static void logTraceHop( Hop hop, int level ) {
-        if( LOG.isTraceEnabled() ) {
-            String offset = Explain.getIdentation(level);
-            LOG.trace(offset+ "Hop " + hop.getName() + "(" + hop.getClass().getSimpleName()
-                    + ", " + hop.getHopID() + ")" + " " + hop.getDim1() + "x" + hop.getDim2());
+        // does the root expression want a transposed result
+        boolean rootWantsTranspose = chainResult.rootIsTranspose;
+
+        if (rootWantsTranspose) {
+            // use the transposed plan
+            result.optimalPlan = finalTransposed;
+            result.useTransposedPlan = true;
+            result.optimalCost = finalTransposed.cost;
+            result.originalCost = finalNormal.cost;
+        } else {
+            // use the normal plan
+            result.optimalPlan = finalNormal;
+            result.useTransposedPlan = false;
+            result.optimalCost = finalNormal.cost;
+            result.originalCost = finalNormal.cost;
         }
-    }
 
-    private void updateParentOfHop(Hop hopToUpdate, Hop parentToSet) {
-        hopToUpdate.getParent().clear();
-        hopToUpdate.getParent().add(parentToSet);
+        return result;
     }
 
     /**
-     * Updates input list, dimensions of matrix and text of a given Hop.
+     * Reconstructs the optimal HOP DAG from the DP memo table.
      *
-     * @param hopToUpdate the hop that will be updated
-     * @param inputList new input list that will be set
-     * @param text new text of the operator
+     * This method recursively builds the new expression tree by following the
+     * split points stored in the memo table.
+     *
+     * @param memo The DP memoization table
+     * @param chainResult The extracted chain metadata
+     * @param i Start index of the subproblem
+     * @param j End index of the subproblem
+     * @param useTransposed Whether to build the transposed plan
+     * @return The reconstructed Hop representing the optimal plan
      */
-    private void updateAttributesOfHop(Hop hopToUpdate, ArrayList<Hop> inputList, String text) {
-        hopToUpdate.getInput().clear();
+    private Hop reconstructPlan(PlanPair[][] memo, ChainExtractionResult chainResult,
+                                int i, int j, boolean useTransposed) {
 
-        for (Hop input : inputList) {
-            hopToUpdate.getInput().add(input);
+        ArrayList<Hop> chain = chainResult.leafMatrices;
+
+        // Base case: single matrix
+        if (i == j) {
+            Hop leaf = chain.get(i);
+            boolean leafIsTransposed = chainResult.leafIsTransposed.get(i);
+            Plan plan = useTransposed ? memo[i][j].transposedPlan : memo[i][j].normalPlan;
+
+            // Determine what form of the leaf we need
+            if (useTransposed) {
+                if (plan.isTransposed) {
+                    // We need the transposed version
+                    return leafIsTransposed ? leaf : HopRewriteUtils.createTranspose(leaf);
+                } else {
+                    // need the normal version
+                    return leaf;
+                }
+            } else {
+                // need the normal version
+                return leaf;
+            }
         }
 
-        if (HopRewriteUtils.isMatrixMultiply(hopToUpdate)) {
-            // Here we add dimensions of a matrixmult operator
-            hopToUpdate.setDim1(inputList.get(0).getDim1());
-            hopToUpdate.setDim2(inputList.get(1).getDim2());
+        // Recursive case: combine subproblems according to the optimal split
+        Plan plan = useTransposed ? memo[i][j].transposedPlan : memo[i][j].normalPlan;
+        int k = plan.splitPoint;
+
+        if (useTransposed && plan.isTransposed) {
+            // Building t(A*B) = t(B)*t(A)
+            Hop rightTransposed = reconstructPlan(memo, chainResult, k+1, j, true);  // t(B)
+            Hop leftTransposed = reconstructPlan(memo, chainResult, i, k, true);     // t(A)
+            return HopRewriteUtils.createMatrixMultiply(rightTransposed, leftTransposed);
         } else {
-            // Here we add dimensions of a transpose operator
-            hopToUpdate.setDim1(inputList.get(0).getDim2());
-            hopToUpdate.setDim2(inputList.get(0).getDim1());
+            // normal case: A*B
+            Hop left = reconstructPlan(memo, chainResult, i, k, false);
+            Hop right = reconstructPlan(memo, chainResult, k+1, j, false);
+            return HopRewriteUtils.createMatrixMultiply(left, right);
         }
-
-        //hopToUpdate.setText(String.format("t(%s)", text));
     }
 
-    private boolean hasOnlyTwoReadsAsInput(Hop transposeOperatorChild) {
-        if (transposeOperatorChild.getInput().size() == 2) {
-            for(Hop hop: transposeOperatorChild.getInput()) {
-                if (!HopRewriteUtils.isData(hop, Types.OpOpData.TRANSIENTREAD, Types.OpOpData.PERSISTENTREAD))
-                    return false;
+    /**
+     * Extracts a chain of matrices from the HOP DAG.
+     *
+     * This method identifies sequences of matrix multiplications and transposes,
+     * tracking which matrices appear transposed in the original expression.
+     *
+     * @param root The root hop of the potential chain
+     * @return ChainExtractionResult containing the extracted matrices and metadata
+     */
+    private ChainExtractionResult extractChain(Hop root) {
+        ChainExtractionResult result = new ChainExtractionResult();
+
+        // Special handling if root is a transpose
+        if (HopRewriteUtils.isReorg(root, Types.ReOrgOp.TRANS)) {
+            result.rootIsTranspose = true;
+            Hop child = root.getInput().get(0);
+
+            if (HopRewriteUtils.isMatrixMultiply(child)) {
+                // This is t(A*B*...), extract the chain
+                extractChainRecursive(child, result, false);
+            } else {
+                // Just t(A), not a chain
+                result.isValid = false;
             }
-            return true;
+        } else if (HopRewriteUtils.isMatrixMultiply(root)) {
+            // Root is a matmul, extract normally
+            extractChainRecursive(root, result, false);
+        } else {
+            // Not an optimizable operation
+            result.isValid = false;
         }
-        return false;
+
+        return result;
+    }
+
+    /**
+     * Recursive helper for chain extraction.
+     *
+     * @param hop Current hop being processed
+     * @param result Accumulator for the extraction result
+     * @param isTransposed Whether this hop appears in a transposed context
+     */
+    private void extractChainRecursive(Hop hop, ChainExtractionResult result, boolean isTransposed) {
+        boolean isMatMul = HopRewriteUtils.isMatrixMultiply(hop);
+        boolean isTranspose = HopRewriteUtils.isReorg(hop, Types.ReOrgOp.TRANS);
+
+        // Any matrix that's not matmul or transpose is a leaf
+        boolean isLeaf = !isMatMul && !isTranspose;
+
+        // Exclude aggregation operations
+        boolean isAggUnary = (hop instanceof org.apache.sysds.hops.AggUnaryOp);
+
+        if (isAggUnary) {
+            result.isValid = false;
+            return;
+        }
+
+        if (isLeaf) {
+            // found a base matrix
+            result.leafMatrices.add(0, hop);
+            result.leafIsTransposed.add(0, isTransposed);
+            return;
+        }
+
+        if (isTranspose) {
+            extractChainRecursive(hop.getInput().get(0), result, !isTransposed);
+            return;
+        }
+
+        if (isMatMul) {
+            if (hop.getParent().size() > 1) {
+                result.isValid = false;
+                return;
+            }
+
+            // recurse on both children
+            Hop left = hop.getInput().get(0);
+            Hop right = hop.getInput().get(1);
+
+            extractChainRecursive(left, result, isTransposed);
+            if (!result.isValid) return;
+
+            extractChainRecursive(right, result, isTransposed);
+            return;
+        }
+
+        result.isValid = false;
+    }
+
+    /**
+     * Represents a single execution plan
+     *
+     * Stores:
+     * - cost: Total FLOPs required
+     * - splitPoint: Where to split the chain for this plan
+     * - dim1, dim2: Output dimensions of this plan
+     * - isTransposed: Whether this plan produces a transposed result
+     */
+    private class Plan {
+        double cost = Double.MAX_VALUE;  // Total FLOPs
+        int splitPoint = -1;              // Optimal split index
+        long dim1 = -1;                   // Output rows
+        long dim2 = -1;                   // Output columns
+        boolean isTransposed = false;     // Does this plan produce t(result)?
+
+        Plan() { }
+
+        Plan(double cost, int split, long dim1, long dim2, boolean transposed) {
+            this.cost = cost;
+            this.splitPoint = split;
+            this.dim1 = dim1;
+            this.dim2 = dim2;
+            this.isTransposed = transposed;
+        }
+    }
+
+    /**
+     * stores both normal and transposed plans for a subproblem.
+     *
+     * This is the core of the memoization table. Each cell memo[i][j]
+     * contains a PlanPair that tracks the optimal way to compute
+     * chain[i...j] both normally and transposed.
+     */
+    private class PlanPair {
+        Plan normalPlan;      // Optimal plan for chain[i...j]
+        Plan transposedPlan;  // Optimal plan for t(chain[i...j])
+
+        PlanPair() {
+            this.normalPlan = new Plan();
+            this.transposedPlan = new Plan();
+        }
+    }
+
+    /**
+     * Result of chain extraction from the HOP DAG.
+     */
+    private class ChainExtractionResult {
+        ArrayList<Hop> leafMatrices = new ArrayList<>();          // The base matrices
+        ArrayList<Boolean> leafIsTransposed = new ArrayList<>();  // Transpose flags
+        boolean rootIsTranspose = false;                          // Is root a transpose?
+        boolean isValid = true;                                   // Is extraction valid?
+    }
+
+    /**
+     * Final result of the DP algorithm.
+     */
+    private class DPResult {
+        PlanPair[][] memo;                    // DP memoization table
+        ChainExtractionResult chainResult;    // original chain metadata
+        Plan optimalPlan;                     // The chosen optimal plan
+        boolean useTransposedPlan;            // Whether to use transposed plan
+        double optimalCost;                   // Cost of optimal plan
+        double originalCost;                  // Cost of original plan
     }
 }

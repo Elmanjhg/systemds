@@ -1199,6 +1199,18 @@ public class HopRewriteUtils {
 	public static boolean isMatrixMultiply(Hop hop) {
 		return hop instanceof AggBinaryOp && ((AggBinaryOp)hop).isMatrixMultiply();
 	}
+
+    public static boolean isElementwiseBinary(Hop hop) {
+        if ( !(hop instanceof BinaryOp) || hop instanceof AggBinaryOp )
+            return false;
+
+        BinaryOp bop = (BinaryOp) hop;
+        OpOp2 op = bop.getOp();
+
+        return op == OpOp2.PLUS
+                || op == OpOp2.MINUS
+                || op == OpOp2.MULT;
+    }
 	
 	public static boolean isAggUnaryOp(Hop hop, AggOp op, Direction dir) {
 		return isAggUnaryOp(hop, op) && ((AggUnaryOp)hop).getDirection()==dir;

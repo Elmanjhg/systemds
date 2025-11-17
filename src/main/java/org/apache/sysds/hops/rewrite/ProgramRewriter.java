@@ -128,22 +128,24 @@ public class ProgramRewriter{
 		{
 			if ( DMLScript.USE_ACCELERATOR ){
 				_dagRuleSet.add( new RewriteGPUSpecificOps() );	// gpu-specific rewrites
-			}
-			if ( OptimizerUtils.ALLOW_SUM_PRODUCT_REWRITES) {
-				_dagRuleSet.add( new RewriteMatrixMultChainOptimization()         ); //dependency: cse
-				if( OptimizerUtils.ALLOW_SUM_PRODUCT_REWRITES2 )
-					_dagRuleSet.add( new RewriteElementwiseMultChainOptimization()); //dependency: cse
-			}
-			if(OptimizerUtils.ALLOW_ADVANCED_MMCHAIN_REWRITES){
-				_dagRuleSet.add( new RewriteMatrixMultChainOptimizationTranspose()      ); //dependency: cse
-				_dagRuleSet.add( new RewriteMatrixMultChainOptimizationSparse()         ); //dependency: cse
-			}
-			if( OptimizerUtils.ALLOW_ALGEBRAIC_SIMPLIFICATION ) {
-				_dagRuleSet.add( new RewriteAlgebraicSimplificationDynamic()      ); //dependencies: cse
-				_dagRuleSet.add( new RewriteAlgebraicSimplificationStatic()       ); //dependencies: cse
-			}
+            }
             if(OptimizerUtils.ALLOW_GENERAL_MMCHAIN_REWRITES){
+                System.out.println("Loading RewriteMatrixOperations() ...");
                 _dagRuleSet.add( new RewriteMatrixOperations()          );
+            }
+            if ( OptimizerUtils.ALLOW_SUM_PRODUCT_REWRITES) {
+                _dagRuleSet.add( new RewriteMatrixMultChainOptimization()         ); //dependency: cse
+                if( OptimizerUtils.ALLOW_SUM_PRODUCT_REWRITES2 ) {
+                    _dagRuleSet.add( new RewriteElementwiseMultChainOptimization()); //dependency: cse
+                }
+            }
+            if(OptimizerUtils.ALLOW_ADVANCED_MMCHAIN_REWRITES){
+                _dagRuleSet.add( new RewriteMatrixMultChainOptimizationTranspose()      ); //dependency: cse
+                _dagRuleSet.add( new RewriteMatrixMultChainOptimizationSparse()         ); //dependency: cse
+            }
+            if( OptimizerUtils.ALLOW_ALGEBRAIC_SIMPLIFICATION ) {
+                _dagRuleSet.add( new RewriteAlgebraicSimplificationDynamic()      ); //dependencies: cse
+                _dagRuleSet.add( new RewriteAlgebraicSimplificationStatic()       ); //dependencies: cse
             }
 		}
 		
