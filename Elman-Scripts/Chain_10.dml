@@ -1,0 +1,13 @@
+M1 = rand(rows=10, cols=10, sparsity=1.0)
+M2 = rand(rows=10, cols=10, sparsity=1.0)
+M3 = rand(rows=10, cols=10, sparsity=1.0)
+M4 = rand(rows=10, cols=10, sparsity=1.0)
+M5 = rand(rows=10, cols=10, sparsity=1.0)
+M6 = rand(rows=10, cols=10, sparsity=1.0)
+M7 = rand(rows=10, cols=10, sparsity=1.0)
+M8 = rand(rows=10, cols=10, sparsity=1.0)
+M9 = rand(rows=10, cols=10, sparsity=1.0)
+M10 = rand(rows=10, cols=10, sparsity=1.0)
+
+R = M1 %*% M2 %*% M3 %*% M4 %*% t(M5) %*% M6 %*% M7 %*% M8 %*% M9 %*% M10
+write(R, "output.csv")

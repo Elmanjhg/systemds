@@ -1,0 +1,10 @@
+{
+    "data_type": "matrix",
+    "value_type": "double",
+    "rows": 10,
+    "cols": 10,
+    "nnz": 100,
+    "format": "text",
+    "author": "elman1901",
+    "created": "2026-06-10 02:46:50 CEST"
+}

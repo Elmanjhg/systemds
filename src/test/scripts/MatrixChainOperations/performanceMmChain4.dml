@@ -1,0 +1,9 @@
+A = rand(rows=10, cols=5)
+B = rand(rows=5, cols=6)
+C = rand(rows=1000000, cols=10)
+D = rand(rows=10, cols=20)
+E = rand(rows=20, cols=10)
+F = rand(rows=10, cols=10)
+
+R = t(A %*% B) %*% t(C %*% D %*% E %*% F)
+write(R, "output.csv")

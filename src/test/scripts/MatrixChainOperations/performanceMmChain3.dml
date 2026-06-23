@@ -1,0 +1,22 @@
+V = rand(rows=10000, cols=2000, sparsity=1.0)
+W = rand(rows=10000, cols=50,   sparsity=1.0)
+H = rand(rows=50,    cols=2000, sparsity=1.0)
+
+numH1 = t(W) %*% V
+denH1 = t(W) %*% W %*% H
+H = H * (numH1 / denH1)
+
+numW1 = V %*% t(H)
+denW1 = W %*% H %*% t(H)
+W = W * (numW1 / denW1)
+
+numH2 = t(W) %*% V
+denH2 = t(W) %*% W %*% H
+H = H * (numH2 / denH2)
+
+numW2 = V %*% t(H)
+denW2 = W %*% H %*% t(H)
+W = W * (numW2 / denW2)
+
+write(W, "output_W.csv")
+write(H, "output_H.csv")

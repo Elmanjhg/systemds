@@ -1,0 +1,8 @@
+A = rand(rows=1200, cols=400, sparsity=1.0)
+B = rand(rows=400, cols=700, sparsity=1.0)
+C = rand(rows=300, cols=700, sparsity=1.0)
+D = rand(rows=300, cols=900, sparsity=1.0)
+
+R = A %*% B %*% t(C) %*% D
+
+write(R, "output_R1.csv")
